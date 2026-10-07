@@ -115,7 +115,7 @@ setInterval(async () => {
       });
 
       // 🔥 LOGIKA DETEKSI SPIKE FLOW LIKUIDASI
-      if (Math.abs(netFlow) >= SPIKE_THRESHOLD_USDT) {
+      if (Math.abs(netFlow) >= SPIKE_THRESHOLD_USDT ) {
         const type = netFlow > 0 ? '🟢 *LIQUIDATION SPIKE INFLOW (SHORT SQUEEZE)*' : '🔴 *LIQUIDATION SPIKE OUTFLOW (LONG DUMP)*';
         const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
         
@@ -125,8 +125,10 @@ setInterval(async () => {
           `• *Inflow (Short Liq):* $${minuteInflow.toLocaleString(undefined, {maximumFractionDigits:0})}\n` +
           `• *Outflow (Long Liq):* $${minuteOutflow.toLocaleString(undefined, {maximumFractionDigits:0})}\n` +
           `• *Waktu:* ${now.toLocaleTimeString()}`;
-        
-        sendTelegramAlert(alertMessage);
+        const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
+        if (isTelegramEnabled){
+          sendTelegramAlert(alertMessage);
+        }
       }
     }
   }
