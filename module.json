@@ -1,0 +1,7 @@
+{
+  "pm2-logrotate": {
+    "max_size": "100M",
+    "retain": 10,
+    "compress": true
+  }
+}

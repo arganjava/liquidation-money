@@ -4,7 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "pm2:start": "npx pm2 start ecosystem.config.js",
+    "pm2:stop": "npx pm2 stop liquidation-engine",
+    "pm2:restart": "npx pm2 restart liquidation-engine",
+    "pm2:reload": "npx pm2 reload liquidation-engine",
+    "pm2:logs": "npx pm2 logs liquidation-engine",
+    "pm2:status": "npx pm2 status"
   },
   "author": "",
   "license": "ISC",
@@ -14,6 +20,7 @@
     "dotenv": "^18.0.5",
     "express": "^5.2.1",
     "mongoose": "^9.11.0",
+    "pm2": "^7.0.4",
     "ws": "^8.22.0"
   }
 }
