@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Money Flow</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<nav><b>💥 Liquidation</b><a class="on" href="/">Money Flow</a><a href="/analysis.html">Money Analisa</a><a href="/settings.html">Telegram Setting</a></nav>
+<main>
+  <div class="bar">
+    <label>Symbol<input id="symbol" placeholder="BTC"></label>
+    <label>Dari<input id="from" type="datetime-local"></label>
+    <label>Sampai<input id="to" type="datetime-local"></label>
+    <label>Sort<select id="sort"><option value="timestamp">Waktu</option><option value="symbol">Symbol</option><option value="inflow">Inflow</option><option value="outflow">Outflow</option><option value="net_flow">Net flow</option></select></label>
+    <label>Urutan<select id="order"><option value="desc">Desc</option><option value="asc">Asc</option></select></label>
+    <label>Limit<select id="limit"><option>50</option><option>100</option><option>200</option><option>500</option></select></label>
+    <button class="pri" id="apply">Terapkan</button>
+    <button id="liveBtn"><span class="dot" id="dot"></span>Live: OFF</button>
+  </div>
+  <div class="wrap"><table>
+    <thead><tr><th>Waktu</th><th>Symbol</th><th class="n">Inflow (Short Liq)</th><th class="n">Outflow (Long Liq)</th><th class="n">Net Flow</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <div class="bar" style="margin-top:12px">
+    <button id="prev">‹</button><span id="info" class="mute"></span><button id="next">›</button>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => '$' + Math.round(n).toLocaleString('en-US');
+let page = 1, total = 0, ws = null;
+
+const row = (d, flash) => `<tr class="${flash ? 'flash' : ''}">
+  <td>${new Date(d.timestamp).toLocaleString()}</td><td><b>${d.symbol}</b></td>
+  <td class="n up">${fmt(d.inflow)}</td><td class="n down">${fmt(d.outflow)}</td>
+  <td class="n ${d.net_flow >= 0 ? 'up' : 'down'}">${d.net_flow >= 0 ? '+' : '-'}${fmt(Math.abs(d.net_flow))}</td></tr>`;
+
+function params() {
+  const p = new URLSearchParams({ page, symbol: $('symbol').value.trim(), sort: $('sort').value, order: $('order').value, limit: $('limit').value });
+  ['from', 'to'].forEach(k => $(k).value && p.set(k, new Date($(k).value).toISOString()));
+  return p;
+}
+
+async function load() {
+  const r = await (await fetch('/api/flow?' + params())).json();
+  total = r.total;
+  $('rows').innerHTML = r.rows.map(d => row(d)).join('') || '<tr><td colspan="5" class="mute">Tidak ada data</td></tr>';
+  $('info').textContent = `Hal ${r.page} / ${Math.max(1, Math.ceil(r.total / r.limit))} · ${r.total.toLocaleString()} data`;
+}
+
+function toggleLive() {
+  if (ws) { ws.close(); return; }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { $('dot').classList.add('live'); $('liveBtn').lastChild.textContent = 'Live: ON'; };
+  ws.onclose = () => { ws = null; $('dot').classList.remove('live'); $('liveBtn').lastChild.textContent = 'Live: OFF'; };
+  ws.onmessage = e => {
+    const d = JSON.parse(e.data), sym = $('symbol').value.trim().toUpperCase();
+    if (sym && !d.symbol.includes(sym)) return;
+    $('rows').insertAdjacentHTML('afterbegin', row(d, true));
+    while ($('rows').rows.length > 500) $('rows').deleteRow(-1);
+  };
+}
+
+$('apply').onclick = () => { page = 1; load(); };
+$('prev').onclick = () => { if (page > 1) { page--; load(); } };
+$('next').onclick = () => { if (page * $('limit').value < total) { page++; load(); } };
+$('liveBtn').onclick = toggleLive;
+load();
+</script></body></html>

@@ -1,0 +1,27 @@
+:root { --bg:#0e1116; --card:#161b22; --line:#262d38; --txt:#e6edf3; --mute:#8b949e; --up:#2ea043; --down:#f85149; --acc:#58a6ff; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+nav { display:flex; gap:4px; padding:10px 20px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; }
+nav b { margin-right:20px; }
+nav a { color:var(--mute); text-decoration:none; padding:4px 12px; border-radius:6px; }
+nav a.on, nav a:hover { color:var(--txt); background:var(--line); }
+main { padding:20px; max-width:1200px; margin:auto; }
+.bar { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin-bottom:16px; }
+label { display:flex; flex-direction:column; font-size:12px; color:var(--mute); gap:2px; }
+input, select, button { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; }
+button { cursor:pointer; } button:hover { border-color:var(--acc); }
+button.pri { background:var(--acc); color:#0e1116; border-color:var(--acc); font-weight:600; }
+.wrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+table { width:100%; border-collapse:collapse; }
+th, td { padding:8px 12px; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
+th { color:var(--mute); font-weight:500; background:var(--card); cursor:pointer; user-select:none; }
+td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+.up { color:var(--up); } .down { color:var(--down); } .mute { color:var(--mute); }
+.badge { padding:2px 8px; border-radius:99px; font-size:12px; border:1px solid var(--line); }
+.b-long { color:var(--up); border-color:var(--up); } .b-short { color:var(--down); border-color:var(--down); }
+.b-cons { color:var(--mute); }
+.flash { animation:fl 1.5s; } @keyframes fl { from { background:#1f6feb44; } }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--mute); margin-right:6px; }
+.dot.live { background:var(--up); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:20px; max-width:460px; display:grid; gap:16px; }
+.legend { margin-top:16px; color:var(--mute); font-size:12px; }

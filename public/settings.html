@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Telegram Setting</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<nav><b>💥 Liquidation</b><a href="/">Money Flow</a><a href="/analysis.html">Money Analisa</a><a class="on" href="/settings.html">Telegram Setting</a></nav>
+<main>
+  <div class="card">
+    <label style="flex-direction:row;align-items:center;gap:10px;font-size:14px;color:var(--txt)">
+      <input id="enabled" type="checkbox" style="width:18px;height:18px"> Aktifkan notifikasi Telegram
+    </label>
+    <label>SPIKE_THRESHOLD_USDT (net flow per menit)
+      <input id="threshold" type="number" min="1" step="100" value="5000">
+    </label>
+    <div class="bar" style="margin:0">
+      <button class="pri" id="save">Simpan</button>
+      <button id="test">Kirim test</button>
+      <span id="msg" class="mute"></span>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const say = (t, ok = true) => { $('msg').textContent = t; $('msg').className = ok ? 'up' : 'down'; };
+
+(async () => {
+  const s = await (await fetch('/api/settings')).json();
+  $('enabled').checked = s.enabled; $('threshold').value = s.threshold;
+})();
+
+$('save').onclick = async () => {
+  const r = await fetch('/api/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: $('enabled').checked, threshold: $('threshold').value })
+  });
+  const j = await r.json();
+  r.ok ? say('✔ Tersimpan (berlaku di siklus 1 menit berikutnya)') : say(j.error, false);
+};
+
+$('test').onclick = async () => {
+  const r = await fetch('/api/settings/test', { method: 'POST' });
+  r.ok ? say('✔ Test terkirim') : say('Gagal kirim', false);
+};
+</script></body></html>

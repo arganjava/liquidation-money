@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Money Analisa</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<nav><b>💥 Liquidation</b><a href="/">Money Flow</a><a class="on" href="/analysis.html">Money Analisa</a><a href="/settings.html">Telegram Setting</a></nav>
+<main>
+  <div class="bar">
+    <label>Rentang<select id="minutes"><option value="15">15 menit</option><option value="60" selected>1 jam</option><option value="240">4 jam</option><option value="1440">24 jam</option><option value="10080">7 hari</option></select></label>
+    <label>Bias<select id="biasF"><option value="">Semua</option><option>consolidation</option><option>long continuation</option><option>short continuation</option><option>long reversal</option><option>short reversal</option></select></label>
+    <label>Symbol<input id="symbol" placeholder="BTC"></label>
+    <label>Min total (USDT)<input id="minTotal" type="number" value="0" min="0" style="width:120px"></label>
+    <button class="pri" id="apply">Refresh</button>
+    <span class="mute" id="stamp"></span>
+  </div>
+  <div class="wrap"><table>
+    <thead><tr id="head"></tr></thead><tbody id="rows"></tbody>
+  </table></div>
+  <div class="legend">
+    Inflow = short liquidation (harga naik) · Outflow = long liquidation (harga turun). Rentang dibagi dua paruh (awal vs akhir).<br>
+    <b>consolidation</b>: net flow kecil di kedua paruh · <b>long continuation</b>: net inflow dominan terus · <b>short continuation</b>: net outflow dominan terus ·
+    <b>long reversal</b>: awal outflow → akhir inflow · <b>short reversal</b>: awal inflow → akhir outflow.
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => '$' + Math.round(n).toLocaleString('en-US');
+const cols = [
+  ['symbol', 'Symbol'], ['count_inflow', 'Count In', 'n'], ['count_outflow', 'Count Out', 'n'],
+  ['sum_inflow', 'Sum Inflow', 'n'], ['sum_outflow', 'Sum Outflow', 'n'],
+  ['first_detect_time', 'First Detect'], ['last_detect_time', 'Last Detect'], ['bias', 'Bias']
+];
+let data = [], sortKey = 'last_detect_time', dir = -1;
+
+$('head').innerHTML = cols.map(([k, l, c]) => `<th class="${c || ''}" data-k="${k}">${l}</th>`).join('');
+$('head').onclick = e => {
+  const k = e.target.dataset.k; if (!k) return;
+  dir = k === sortKey ? -dir : -1; sortKey = k; render();
+};
+
+const cls = b => b.startsWith('long') ? 'b-long' : b.startsWith('short') ? 'b-short' : 'b-cons';
+const t = d => new Date(d).toLocaleString();
+
+function render() {
+  const sym = $('symbol').value.trim().toUpperCase(), bf = $('biasF').value;
+  const list = data.filter(r => (!sym || r.symbol.includes(sym)) && (!bf || r.bias === bf))
+    .sort((a, b) => (a[sortKey] > b[sortKey] ? 1 : a[sortKey] < b[sortKey] ? -1 : 0) * dir);
+  $('rows').innerHTML = list.map(r => `<tr>
+    <td><b>${r.symbol}</b></td><td class="n">${r.count_inflow}</td><td class="n">${r.count_outflow}</td>
+    <td class="n up">${fmt(r.sum_inflow)}</td><td class="n down">${fmt(r.sum_outflow)}</td>
+    <td>${t(r.first_detect_time)}</td><td>${t(r.last_detect_time)}</td>
+    <td><span class="badge ${cls(r.bias)}">${r.bias}</span></td></tr>`).join('')
+    || '<tr><td colspan="8" class="mute">Tidak ada data</td></tr>';
+}
+
+async function load() {
+  const p = new URLSearchParams({ minutes: $('minutes').value, minTotal: $('minTotal').value || 0 });
+  const r = await (await fetch('/api/analysis?' + p)).json();
+  data = r.rows; $('stamp').textContent = 'Update ' + new Date().toLocaleTimeString();
+  render();
+}
+
+$('apply').onclick = load;
+$('symbol').oninput = $('biasF').onchange = render;
+load(); setInterval(load, 30000);
+</script></body></html>
