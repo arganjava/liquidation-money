@@ -14,7 +14,7 @@ const bus = new EventEmitter();
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 5000;          // Alert jika net_flow > \$50,000 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 2500;          // Alert jika net_flow > \$2,500 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
@@ -44,7 +44,7 @@ function classify(netFlow, ctx, prevAbsNet) {
   const dirClose = sign > 0 ? ctx.closePos : 1 - ctx.closePos; // 1 = close di ujung searah
   let score = 0;
   const why = [];
-
+  let isOiUp = "NO";
   // 1. Harga 5m searah likuidasi?
   const move = sign * ctx.priceChg5m;
   if (move > 0.3) { score++; why.push(`harga 5m searah (${ctx.priceChg5m.toFixed(2)}%)`); }
@@ -56,7 +56,7 @@ function classify(netFlow, ctx, prevAbsNet) {
 
   // 3. Open Interest
   if (ctx.oiChg5m <= -1.5) { score--; why.push(`OI anjlok ${ctx.oiChg5m.toFixed(1)}% (flush selesai?)`); }
-  else if (ctx.oiChg5m >= 0.5) { score++; why.push(`OI naik ${ctx.oiChg5m.toFixed(1)}% (posisi baru masuk)`); }
+  else if (ctx.oiChg5m >= 0.5) { score++; isOiUp = "YES"; why.push(`OI naik ${ctx.oiChg5m.toFixed(1)}% (posisi baru masuk)`); }
 
   // 4. Cascade membesar atau mereda?
   if (prevAbsNet) {
@@ -69,7 +69,7 @@ function classify(netFlow, ctx, prevAbsNet) {
   if (score >= 2) label = sign > 0 ? '🚀 CONTINUATION UP' : '📉 CONTINUATION DOWN';
   else if (score <= -2) label = sign > 0 ? '🔄 REVERSAL WATCH (pump kehabisan tenaga, potensi turun)' : '🔄 REVERSAL WATCH (dump kehabisan tenaga, potensi naik)';
 
-  return { score, label, why };
+  return { score, label, why, isOiUp };
 }
 
 
@@ -179,8 +179,8 @@ setInterval(async () => {
 
         try {
           const ctx = await getContext(symbol);
-          const { score, label, why } = classify(netFlow, ctx, prevAbsNet);
-          if (label === '⚪ NEUTRAL') continue;   // skip sinyal ambigu
+          const { score, label, why, isOiUp } = classify(netFlow, ctx, prevAbsNet);
+          if (label === '⚪ NEUTRAL' || isOiUp === "NO") continue;   // skip sinyal ambigu
           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
           cooldown[symbol] = nowMs;
           const msg =
