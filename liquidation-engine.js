@@ -12,11 +12,66 @@ const bus = new EventEmitter();
 // 1. CONFIGURATION & NOTIFICATION SETTINGS
 // ----------------------------------------------------
 
-// TELEGRAM_BOT_TOKEN=8329903702:AAHUcZEjz_RgE6kM0GR9P0IF2Dxd1RlbU5c
-// TELEGRAM_CHAT_IDS=1081770728
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
 const SPIKE_THRESHOLD_USDT = 5000;          // Alert jika net_flow > \$50,000 USDT dalam 1 menit akibat likuidasi
+
+
+const FAPI = 'https://fapi.binance.com';
+const lastSpike = {};   // symbol -> { absNet, time }
+const cooldown = {};    // symbol -> timestamp
+const COOLDOWN_MS = 5 * 60 * 1000;
+
+async function getContext(symbol) {
+  const [k, oi] = await Promise.all([
+    axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '1m', limit: 6 } }),
+    axios.get(`${FAPI}/futures/data/openInterestHist`, { params: { symbol, period: '5m', limit: 2 } }),
+  ]);
+  const c = k.data.map(x => ({ o: +x[1], h: +x[2], l: +x[3], c: +x[4] }));
+  const last = c[c.length - 1];
+  const priceChg5m = ((last.c - c[0].o) / c[0].o) * 100;
+  const closePos = last.h === last.l ? 0.5 : (last.c - last.l) / (last.h - last.l); // 0=low, 1=high
+  let oiChg5m = 0;
+  if (oi.data.length === 2) {
+    const a = +oi.data[0].sumOpenInterestValue, b = +oi.data[1].sumOpenInterestValue;
+    oiChg5m = ((b - a) / a) * 100;
+  }
+  return { priceChg5m, closePos, oiChg5m, price: last.c };
+}
+
+function classify(netFlow, ctx, prevAbsNet) {
+  const sign = netFlow > 0 ? 1 : -1;            // +1 = squeeze naik, -1 = long dump
+  const dirClose = sign > 0 ? ctx.closePos : 1 - ctx.closePos; // 1 = close di ujung searah
+  let score = 0;
+  const why = [];
+
+  // 1. Harga 5m searah likuidasi?
+  const move = sign * ctx.priceChg5m;
+  if (move > 0.3) { score++; why.push(`harga 5m searah (${ctx.priceChg5m.toFixed(2)}%)`); }
+  else if (move < -0.1) { score--; why.push('harga 5m sudah berbalik'); }
+
+  // 2. Close candle: dekat ujung = kuat, wick panjang = rejection
+  if (dirClose > 0.7) { score++; why.push('close dekat ujung candle'); }
+  else if (dirClose < 0.4) { score--; why.push('ada wick rejection'); }
+
+  // 3. Open Interest
+  if (ctx.oiChg5m <= -1.5) { score--; why.push(`OI anjlok ${ctx.oiChg5m.toFixed(1)}% (flush selesai?)`); }
+  else if (ctx.oiChg5m >= 0.5) { score++; why.push(`OI naik ${ctx.oiChg5m.toFixed(1)}% (posisi baru masuk)`); }
+
+  // 4. Cascade membesar atau mereda?
+  if (prevAbsNet) {
+    const ratio = Math.abs(netFlow) / prevAbsNet;
+    if (ratio > 1.5) { score++; why.push(`cascade membesar ${ratio.toFixed(1)}x`); }
+    else if (ratio < 0.5) { score--; why.push('cascade mereda'); }
+  }
+
+  let label = '⚪ NEUTRAL';
+  if (score >= 2) label = sign > 0 ? '🚀 CONTINUATION UP' : '📉 CONTINUATION DOWN';
+  else if (score <= -2) label = sign > 0 ? '🔄 REVERSAL WATCH (pump kehabisan tenaga, potensi turun)' : '🔄 REVERSAL WATCH (dump kehabisan tenaga, potensi naik)';
+
+  return { score, label, why };
+}
+
 
 async function sendTelegramAlert(message) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -51,7 +106,7 @@ let localCache = {};
 
 function initSymbolCache(symbol) {
   if (!localCache[symbol]) {
-    localCache[symbol] = { inflow: 0, outflow: 0, price:0 };
+    localCache[symbol] = { inflow: 0, outflow: 0, price: 0 };
   }
 }
 
@@ -114,22 +169,49 @@ setInterval(async () => {
         timestamp: now
       });
 
-      // 🔥 LOGIKA DETEKSI SPIKE FLOW LIKUIDASI
-      if (Math.abs(netFlow) >= SPIKE_THRESHOLD_USDT ) {
-        const type = netFlow > 0 ? '🟢 *LIQUIDATION SPIKE INFLOW (SHORT SQUEEZE)*' : '🔴 *LIQUIDATION SPIKE OUTFLOW (LONG DUMP)*';
-        const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
-        
-        const alertMessage = `${type}\n\n` +
-          `• *Coin:* #${symbol} ${currentSnapshot[symbol].price} \n` +
-          `• *Net Liquidation Flow (1m):* ${formattedNet}\n` +
-          `• *Inflow (Short Liq):* $${minuteInflow.toLocaleString(undefined, {maximumFractionDigits:0})}\n` +
-          `• *Outflow (Long Liq):* $${minuteOutflow.toLocaleString(undefined, {maximumFractionDigits:0})}\n` +
-          `• *Waktu:* ${now.toLocaleTimeString()}`;
-        const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
-        if (isTelegramEnabled){
-          sendTelegramAlert(alertMessage);
+      if (Math.abs(netFlow) >= SPIKE_THRESHOLD_USDT) {
+        const nowMs = Date.now();
+        const prev = lastSpike[symbol];
+        const prevAbsNet = prev && nowMs - prev.time < 3 * 60 * 1000 ? prev.absNet : null;
+        lastSpike[symbol] = { absNet: Math.abs(netFlow), time: nowMs };
+
+        if (cooldown[symbol] && nowMs - cooldown[symbol] < COOLDOWN_MS) continue;
+
+        try {
+          const ctx = await getContext(symbol);
+          const { score, label, why } = classify(netFlow, ctx, prevAbsNet);
+          if (label === '⚪ NEUTRAL') continue;   // skip sinyal ambigu
+          const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
+          cooldown[symbol] = nowMs;
+          const msg =
+            `${label}\n\n` +
+            `• *Coin:* #${symbol} ${ctx.price}\n` +
+            `• *Net Liq Flow:* ${formattedNet}\n` +
+            `• *Score:* ${score}\n` +
+            `• *Alasan:*\n   ↳ ${why.join('\n   ↳ ')}`;
+          const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
+          if (isTelegramEnabled) sendTelegramAlert(msg);
+        } catch (e) {
+          console.error(`Gagal ambil konteks ${symbol}:`, e.message);
         }
       }
+
+      // 🔥 LOGIKA DETEKSI SPIKE FLOW LIKUIDASI
+      // if (Math.abs(netFlow) >= SPIKE_THRESHOLD_USDT ) {
+      //   const type = netFlow > 0 ? '🟢 *LIQUIDATION SPIKE INFLOW (SHORT SQUEEZE)*' : '🔴 *LIQUIDATION SPIKE OUTFLOW (LONG DUMP)*';
+      //   const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
+
+      //   const alertMessage = `${type}\n\n` +
+      //     `• *Coin:* #${symbol} ${currentSnapshot[symbol].price} \n` +
+      //     `• *Net Liquidation Flow (1m):* ${formattedNet}\n` +
+      //     `• *Inflow (Short Liq):* $${minuteInflow.toLocaleString(undefined, {maximumFractionDigits:0})}\n` +
+      //     `• *Outflow (Long Liq):* $${minuteOutflow.toLocaleString(undefined, {maximumFractionDigits:0})}\n` +
+      //     `• *Waktu:* ${now.toLocaleTimeString()}`;
+      //   const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
+      //   if (isTelegramEnabled){
+      //     sendTelegramAlert(alertMessage);
+      //   }
+      // }
     }
   }
 
@@ -197,10 +279,10 @@ setInterval(async () => {
 
 //         // Deteksi jika volume menit ini melebihi ambang batas dasar DAN terjadi lonjakan di atas rata-rata histori
 //         if (absoluteNetFlow >= SPIKE_THRESHOLD_USDT && absoluteNetFlow > (avgHistoricalNet * 2.5)) {
-          
+
 //           // Hitung berapa kali lipat lonjakannya
 //           const multiplier = (absoluteNetFlow / avgHistoricalNet).toFixed(1);
-          
+
 //           const flowDirection = netFlow > 0 ? '🟢 *ANOMALI LIQUIDATION INFLOW (PUMP)*' : '🔴 *ANOMALI LIQUIDATION OUTFLOW (DUMP)*';
 //           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(absoluteNetFlow);
 //           const formattedAvg = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(avgHistoricalNet);
