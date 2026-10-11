@@ -14,7 +14,7 @@ const bus = new EventEmitter();
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 2500;          // Alert jika net_flow > \$2,500 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 500;          // Alert jika net_flow > \$2,500 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
@@ -36,17 +36,24 @@ async function getContext(symbol) {
     const a = +oi.data[0].sumOpenInterestValue, b = +oi.data[1].sumOpenInterestValue;
     oiChg5m = ((b - a) / a) * 100;
   }
-  return { priceChg5m, closePos, oiChg5m, price: last.c };
+
+  const delta = k.data.map(x => 2 * (+x[10]) - (+x[7]));   // buy agresif - sell agresif (USDT)
+  const cvd5m = delta.reduce((a, b) => a + b, 0);
+  const lastDelta = delta[delta.length - 1];
+  return { priceChg5m, closePos, oiChg5m, price: last.c, cvd5m, lastDelta };
 }
 
 function classify(netFlow, ctx, prevAbsNet) {
-  const sign = netFlow > 0 ? 1 : -1;            // +1 = squeeze naik, -1 = long dump
+  const sign = netFlow > 0 ? 1 : -1;  
+  const move = sign * ctx.priceChg5m;          // >0 = harga searah likuidasi
+  const cvd = sign * ctx.cvd5m;             // >0 = taker searah
+  const last = sign * ctx.lastDelta;      // >0 = candle terakhir masih searah
+          // +1 = squeeze naik, -1 = long dump
   const dirClose = sign > 0 ? ctx.closePos : 1 - ctx.closePos; // 1 = close di ujung searah
   let score = 0;
   const why = [];
   let isOiUp = "NO";
   // 1. Harga 5m searah likuidasi?
-  const move = sign * ctx.priceChg5m;
   if (move > 0.3) { score++; why.push(`harga 5m searah (${ctx.priceChg5m.toFixed(2)}%)`); }
   else if (move < -0.1) { score--; why.push('harga 5m sudah berbalik'); }
 
@@ -57,6 +64,14 @@ function classify(netFlow, ctx, prevAbsNet) {
   // 3. Open Interest
   if (ctx.oiChg5m <= -1.5) { score--; why.push(`OI anjlok ${ctx.oiChg5m.toFixed(1)}% (flush selesai?)`); }
   else if (ctx.oiChg5m >= 0.5) { score++; isOiUp = "YES"; why.push(`OI naik ${ctx.oiChg5m.toFixed(1)}% (posisi baru masuk)`); }
+
+
+  if (cvd > 0.05 && last > 0.05) { score += 2; why.push('CVD & delta terakhir searah (taker masih agresif)'); }
+  else if (cvd > 0.05) { score += 1; why.push('CVD searah, tapi delta terakhir melemah'); }
+
+  if (move > 0.2 && cvd < 0)  { score -= 2; why.push('harga searah tapi CVD berlawanan (absorpsi)'); }
+  if (last < -0.05)           { score -= 1; why.push('delta candle terakhir berbalik'); }
+
 
   // 4. Cascade membesar atau mereda?
   if (prevAbsNet) {
@@ -183,8 +198,9 @@ setInterval(async () => {
           if (label === '⚪ NEUTRAL' || isOiUp === "NO") continue;   // skip sinyal ambigu
           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
           cooldown[symbol] = nowMs;
+          console.log(`📢 [ALERT] ${label} | ${symbol} | Net Flow: ${formattedNet} | Score: ${score} | OI Up: ${isOiUp}`);
           const msg =
-            `${label}\n\n` +
+            `CVD ${label}\n\n` +
             `• *Coin:* #${symbol} ${ctx.price}\n` +
             `• *Net Liq Flow:* ${formattedNet}\n` +
             `• *Score:* ${score}\n` +
@@ -224,7 +240,7 @@ setInterval(async () => {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
     }
   }
-}, 10 * 1000);
+}, 65 * 1000);
 
 
 // JOB B: Setiap 5 Menit - Agregasi data 5 menit terakhir ke `money_calculation`
