@@ -7,6 +7,8 @@ dotenv.config();
 const { FlowMoney, Setting } = require('./models');
 const EventEmitter = require('events');
 const bus = new EventEmitter();
+const { getBookImbalance } = require('./book-imbalance');   // taruh di bagian atas file
+
 
 // ----------------------------------------------------
 // 1. CONFIGURATION & NOTIFICATION SETTINGS
@@ -193,17 +195,33 @@ setInterval(async () => {
         if (cooldown[symbol] && nowMs - cooldown[symbol] < COOLDOWN_MS) continue;
 
         try {
+          
           const ctx = await getContext(symbol);
           const { score, label, why, isOiUp } = classify(netFlow, ctx, prevAbsNet);
           if (label === '⚪ NEUTRAL' || isOiUp === "NO") continue;   // skip sinyal ambigu
           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
           cooldown[symbol] = nowMs;
+
+          const book = await getBookImbalance(symbol).catch(() => null);
+          const sign = netFlow > 0 ? 1 : -1;
+          let bookLine = '• *Orderbook:* tidak tersedia';
+
+          if (book && book.reliable) {
+            const dirImb = sign * book.imb;      // + = mendukung arah signal
+            bookLine = `• *Orderbook:* bid/ask ${book.ratio.toFixed(2)}x ` +
+              `${dirImb > 0.2 ? '✅ mendukung' : dirImb < -0.2 ? '⚠️ melawan' : '⚪ netral'} (±${book.band.toFixed(2)}%)`;
+          } else if (book) {
+            bookLine = '• *Orderbook:* ⚠️ tidak stabil / spread lebar (diabaikan)';
+          }
+
+
           console.log(`📢 [ALERT] ${label} | ${symbol} | Net Flow: ${formattedNet} | Score: ${score} | OI Up: ${isOiUp}`);
           const msg =
             `CVD ${label}\n\n` +
             `• *Coin:* #${symbol} ${ctx.price}\n` +
             `• *Net Liq Flow:* ${formattedNet}\n` +
             `• *Score:* ${score}\n` +
+            `${bookLine}\n` +
             `• *Alasan:*\n   ↳ ${why.join('\n   ↳ ')}`;
           const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
           if (isTelegramEnabled) sendTelegramAlert(msg);
@@ -233,8 +251,8 @@ setInterval(async () => {
 
   if (docsToInsert.length > 0) {
     try {
-      const inserted = await FlowMoney.insertMany(docsToInsert);
-      inserted.forEach(d => bus.emit('flow', d));
+   //   const inserted = await FlowMoney.insertMany(docsToInsert);
+   //   inserted.forEach(d => bus.emit('flow', d));
       console.log(`⏱️ [1 Menit] Berhasil menyimpan ${docsToInsert.length} data koin ke 'flow_money'`);
     } catch (err) {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
