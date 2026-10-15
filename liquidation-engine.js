@@ -16,7 +16,7 @@ const { getBookImbalance } = require('./book-imbalance');   // taruh di bagian a
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 500;          // Alert jika net_flow > \$2,500 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 5000;          // Alert jika net_flow > \$5,000 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
@@ -123,7 +123,7 @@ let localCache = {};
 
 function initSymbolCache(symbol) {
   if (!localCache[symbol]) {
-    localCache[symbol] = { inflow: 0, outflow: 0, price: 0 };
+    localCache[symbol] = { inflow: 0, outflow: 0, price: 0, inflow_count: 0, outflow_count: 0 };
   }
 }
 
@@ -150,12 +150,14 @@ client.ws.futuresAllLiquidations(liquidation => {
     if (side === 'BUY') {
       // Short Liquidation -> Bursa melakukan market BUY paksa -> INFLOW
       localCache[symbol].inflow += volumeUSDT;
+      localCache[symbol].inflow_count += 1;
     } else if (side === 'SELL') {
       // Long Liquidation -> Bursa melakukan market SELL paksa -> OUTFLOW
       localCache[symbol].outflow += volumeUSDT;
+      localCache[symbol].outflow_count += 1;
     }
 
-    console.log(`💥 ${new Date().toLocaleString()} | ${symbol} | ${side} | Value: \$${volumeUSDT.toFixed(2)}`);
+    console.log(`💥 ${new Date().toLocaleString()} | ${symbol} | ${side} | Volume: \$${volumeUSDT.toFixed(2)} | Price: \$${price.toFixed(2)} | Inflow: ${localCache[symbol].inflow_count} | Outflow: ${localCache[symbol].outflow_count}`);
   }
 });
 
@@ -214,12 +216,15 @@ setInterval(async () => {
             bookLine = '• *Orderbook:* ⚠️ tidak stabil / spread lebar (diabaikan)';
           }
 
-
+          const inflow_count = currentSnapshot[symbol].inflow_count;
+          const outflow_count = currentSnapshot[symbol].outflow_count;
           console.log(`📢 [ALERT] ${label} | ${symbol} | Net Flow: ${formattedNet} | Score: ${score} | OI Up: ${isOiUp}`);
           const msg =
             `CVD ${label}\n\n` +
             `• *Coin:* #${symbol} ${ctx.price}\n` +
             `• *Net Liq Flow:* ${formattedNet}\n` +
+            `• *Inflow:* ${inflow_count} \n` +
+            `• *Outflow:* ${outflow_count}\n` +
             `• *Score:* ${score}\n` +
             `${bookLine}\n` +
             `• *Alasan:*\n   ↳ ${why.join('\n   ↳ ')}`;
@@ -251,14 +256,14 @@ setInterval(async () => {
 
   if (docsToInsert.length > 0) {
     try {
-   //   const inserted = await FlowMoney.insertMany(docsToInsert);
-   //   inserted.forEach(d => bus.emit('flow', d));
+      const inserted = await FlowMoney.insertMany(docsToInsert);
+      inserted.forEach(d => bus.emit('flow', d));
       console.log(`⏱️ [1 Menit] Berhasil menyimpan ${docsToInsert.length} data koin ke 'flow_money'`);
     } catch (err) {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
     }
   }
-}, 65 * 1000);
+}, 60 * 1000);
 
 
 // JOB B: Setiap 5 Menit - Agregasi data 5 menit terakhir ke `money_calculation`
