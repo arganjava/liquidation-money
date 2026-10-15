@@ -166,7 +166,7 @@ client.ws.futuresAllLiquidations(liquidation => {
 // ----------------------------------------------------
 
 // JOB A: Setiap 1 Menit - Simpan State Memori ke `flow_money` & Deteksi Spike Telegram
-setInterval(async () => {
+async function runMinuteJob() {
   const now = new Date();
   const docsToInsert = [];
 
@@ -229,7 +229,10 @@ setInterval(async () => {
             `${bookLine}\n` +
             `• *Alasan:*\n   ↳ ${why.join('\n   ↳ ')}`;
           const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
-          if (isTelegramEnabled) sendTelegramAlert(msg);
+          if (isTelegramEnabled) {
+            sendTelegramAlert(msg);
+            scheduleFollowUp(symbol, netFlow, ctx.price);
+          }
         } catch (e) {
           console.error(`Gagal ambil konteks ${symbol}:`, e.message);
         }
@@ -263,7 +266,48 @@ setInterval(async () => {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
     }
   }
-}, 60 * 1000);
+}
+
+// Follow-up 15 detik setelah alert: cek apakah arah flow berbalik atau berlanjut
+function scheduleFollowUp(symbol, origNet, origPrice) {
+  setTimeout(async () => {
+    try {
+      const c = localCache[symbol];
+      const inflow = c ? c.inflow : 0;
+      const outflow = c ? c.outflow : 0;
+      const net = inflow - outflow;
+      const fmt = v => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v);
+      const origDir = origNet > 0 ? 'INFLOW (CVD naik)' : 'OUTFLOW (CVD turun)';
+      let status;
+      if (net === 0) status = '⚪ *SEPI* - tidak ada likuidasi baru dalam 15 detik';
+      else if (Math.sign(net) === Math.sign(origNet)) status = '✅ *CONTINUE* - arah masih sama';
+      else status = '🔄 *REVERSAL* - arah berbalik';
+      const curPrice = c && c.price ? c.price : origPrice;
+      const msg =
+        `⏱️ *FOLLOW-UP 15s* #${symbol}\n\n` +
+        `• *Sinyal awal:* ${origDir} ${fmt(origNet)} @ ${origPrice}\n` +
+        `• *Inflow:* ${fmt(inflow)} (${c ? c.inflow_count : 0}x)\n` +
+        `• *Outflow:* ${fmt(outflow)} (${c ? c.outflow_count : 0}x)\n` +
+        `• *Net/CVD:* ${fmt(net)}\n` +
+        `• *Harga terakhir:* ${curPrice}\n` +
+        `• *Status:* ${status}`;
+      const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
+      if (enabled) sendTelegramAlert(msg);
+    } catch (e) {
+      console.error(`Gagal follow-up ${symbol}:`, e.message);
+    }
+  }, 15 * 1000);
+}
+
+// Jalankan tepat di menit berikutnya (detik 0-1), lalu ulangi setiap menit
+function scheduleNextMinuteTick() {
+  const delay = 60000 - (Date.now() % 60000) + 500;
+  setTimeout(async () => {
+    try { await runMinuteJob(); } catch (e) { console.error('Job menit gagal:', e.message); }
+    scheduleNextMinuteTick();
+  }, delay);
+}
+scheduleNextMinuteTick();
 
 
 // JOB B: Setiap 5 Menit - Agregasi data 5 menit terakhir ke `money_calculation`
