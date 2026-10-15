@@ -201,7 +201,7 @@ setInterval(async () => {
           const ctx = await getContext(symbol);
           const { score, label, why, isOiUp } = classify(netFlow, ctx, prevAbsNet);
           if (label === '⚪ NEUTRAL' || isOiUp === "NO") continue;   // skip sinyal ambigu
-          const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(netFlow));
+          const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(netFlow);
           cooldown[symbol] = nowMs;
 
           const book = await getBookImbalance(symbol).catch(() => null);
