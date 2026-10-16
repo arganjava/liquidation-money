@@ -16,7 +16,7 @@ const { getBookImbalance } = require('./book-imbalance');   // taruh di bagian a
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 5000;          // Alert jika net_flow > \$5,000 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 10000;          // Alert jika net_flow > \$10,000 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
@@ -200,7 +200,7 @@ async function runMinuteJob() {
           
           const ctx = await getContext(symbol);
           const { score, label, why, isOiUp } = classify(netFlow, ctx, prevAbsNet);
-          if (label === '⚪ NEUTRAL' || isOiUp === "NO") continue;   // skip sinyal ambigu
+          if (label === '⚪ NEUTRAL') continue;   // skip sinyal ambigu
           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(netFlow);
           cooldown[symbol] = nowMs;
 
@@ -220,7 +220,7 @@ async function runMinuteJob() {
           const outflow_count = currentSnapshot[symbol].outflow_count;
           console.log(`📢 [ALERT] ${label} | ${symbol} | Net Flow: ${formattedNet} | Score: ${score} | OI Up: ${isOiUp}`);
           const msg =
-            `CVD ${label}\n\n` +
+            `${label}\n\n` +
             `• *Coin:* #${symbol} ${ctx.price}\n` +
             `• *Net Liq Flow:* ${formattedNet}\n` +
             `• *Inflow:* ${inflow_count} \n` +
@@ -231,7 +231,7 @@ async function runMinuteJob() {
           const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
           if (isTelegramEnabled) {
             sendTelegramAlert(msg);
-            scheduleFollowUp(symbol, netFlow, ctx.price);
+            scheduleFollowUp(symbol, netFlow, ctx.price, label);
           }
         } catch (e) {
           console.error(`Gagal ambil konteks ${symbol}:`, e.message);
@@ -269,7 +269,7 @@ async function runMinuteJob() {
 }
 
 // Follow-up 15 detik setelah alert: cek apakah arah flow berbalik atau berlanjut
-function scheduleFollowUp(symbol, origNet, origPrice) {
+function scheduleFollowUp(symbol, origNet, origPrice, label) {
   setTimeout(async () => {
     try {
       const c = localCache[symbol];
@@ -284,7 +284,7 @@ function scheduleFollowUp(symbol, origNet, origPrice) {
       else status = '🔄 *REVERSAL* - arah berbalik';
       const curPrice = c && c.price ? c.price : origPrice;
       const msg =
-        `⏱️ *FOLLOW-UP 15s* #${symbol}\n\n` +
+        `⏱️ ${label} \n\n*FOLLOW-UP 15s* #${symbol}\n\n` +
         `• *Sinyal awal:* ${origDir} ${fmt(origNet)} @ ${origPrice}\n` +
         `• *Inflow:* ${fmt(inflow)} (${c ? c.inflow_count : 0}x)\n` +
         `• *Outflow:* ${fmt(outflow)} (${c ? c.outflow_count : 0}x)\n` +
