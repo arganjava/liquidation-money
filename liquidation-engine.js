@@ -17,7 +17,7 @@ const { checkContinuation } = require('./follow-up-check');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 2000;          // Alert jika net_flow > \$2,000 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 10000;          // Alert jika net_flow > \$10,000 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
