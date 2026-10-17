@@ -286,21 +286,23 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
       const curPrice = c && c.price ? c.price : origPrice;
 
       let checkLines = '';
-      const isUp = label.includes('CONTINUATION UP');
-      if (isUp || label.includes('CONTINUATION DOWN')) {
+      // Arah yang dikonfirmasi: CONTINUATION searah sinyal, REVERSAL berlawanan dengan flow awal
+      const isReversal = label.includes('REVERSAL');
+      const dir = label.includes('CONTINUATION UP') ? 1
+        : label.includes('CONTINUATION DOWN') ? -1
+        : isReversal && origNet !== 0 ? -Math.sign(origNet) : 0;
+      const isUp = dir > 0;
+      if (dir !== 0) {
         try {
-          const r = await checkContinuation(symbol, isUp ? 1 : -1);
+          const r = await checkContinuation(symbol, dir);
           const t = ok => ok ? '✅' : '❌';
+          const n = v => v == null || !isFinite(v) ? '-' : v.toPrecision(3);
           const tfLine = x =>
-            `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | OBV cross ${isUp ? 'up' : 'down'} ${t(x.obvOk)} | ` +
+            `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | ` +
             `RSI cross ${isUp ? 'up' : 'down'} ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | ` +
-            `MACD ${isUp ? 'lebih besar' : 'lebih kecil'} ${t(x.macdOk)}`;
-          const bookTxt = !r.book ? 'tidak tersedia'
-            : !r.book.reliable ? 'tidak stabil'
-            : `bid/ask ${r.book.ratio.toFixed(2)}x`;
+            `MACD ${isUp ? 'lebih besar' : 'lebih kecil'} ${t(x.macdOk)} (hist ${n(x.hist)} vs ${n(x.prevHist)})`;
           checkLines =
-            `\n• *Konfirmasi ${isUp ? 'UP' : 'DOWN'}:* ${r.allOk ? '✅ SEMUA TERPENUHI' : '⚠️ BELUM LENGKAP'}\n` +
-            `   ↳ *Orderbook ${isUp ? 'bid tebal' : 'bid tipis'}:* ${t(r.bookOk)} (${bookTxt})\n` +
+            `\n• *Konfirmasi ${isReversal ? 'REVERSAL ' : ''}${isUp ? 'UP' : 'DOWN'}:* ${r.allOk ? '✅ SEMUA TERPENUHI' : '⚠️ BELUM LENGKAP'}\n` +
             `${tfLine(r.tf1)}\n${tfLine(r.tf5)}`;
         } catch (e) {
           checkLines = '\n• *Konfirmasi:* gagal diambil';

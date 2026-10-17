@@ -1,5 +1,4 @@
 const axios = require('axios');
-const { getBookImbalance } = require('./book-imbalance');
 const { emaSeries } = require('./macd');
 
 const FAPI = process.env.FAPI_BASE || 'https://fapi.binance.com';
@@ -7,7 +6,6 @@ const RSI_PERIOD = 14;
 const MA_PERIOD = 9;
 const CROSS_LOOKBACK = 3;     // cross dianggap valid jika terjadi di N candle terakhir dan masih di sisi itu
 const CVD_CANDLES = 3;        // jumlah candle terakhir untuk akumulasi tekanan beli/jual
-const BOOK_MIN_IMB = 0.2;     // sama dengan ambang "mendukung" di alert utama
 
 const sma = (arr, p) => arr.map((_, i) => i < p - 1 ? null : arr.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p);
 
@@ -52,13 +50,6 @@ async function analyzeTimeframe(symbol, interval, sign) {
   const recent = delta.slice(-CVD_CANDLES).reduce((a, b) => a + b, 0);
   const cvdOk = sign * recent > 0 && sign * delta[n] >= 0;
 
-  let obv = 0;
-  const obvArr = closes.map((c, i) => {
-    if (i > 0) obv += c > closes[i - 1] ? +data[i][5] : c < closes[i - 1] ? -data[i][5] : 0;
-    return obv;
-  });
-  const obvOk = crossed(obvArr, sma(obvArr, MA_PERIOD), sign);
-
   const rsi = rsiSeries(closes);
   const rsiVals = rsi.map(v => v ?? 50);
   const rsiOk = crossed(rsiVals, sma(rsiVals, MA_PERIOD), sign);
@@ -70,21 +61,19 @@ async function analyzeTimeframe(symbol, interval, sign) {
   const macdOk = sign * (hist[n] - hist[n - 1]) > 0;
 
   return {
-    interval, cvdOk, obvOk, rsiOk, macdOk,
+    interval, cvdOk, rsiOk, macdOk,
     cvd: recent, rsi: rsi[n], hist: hist[n], prevHist: hist[n - 1],
   };
 }
 
 // sign > 0 = CONTINUATION UP, sign < 0 = CONTINUATION DOWN
 async function checkContinuation(symbol, sign) {
-  const [tf1, tf5, book] = await Promise.all([
+  const [tf1, tf5] = await Promise.all([
     analyzeTimeframe(symbol, '1m', sign),
     analyzeTimeframe(symbol, '5m', sign),
-    getBookImbalance(symbol).catch(() => null),
   ]);
-  const bookOk = !!(book && book.reliable && sign * book.imb > BOOK_MIN_IMB);
-  const all = [bookOk, ...[tf1, tf5].flatMap(t => [t.cvdOk, t.obvOk, t.rsiOk, t.macdOk])];
-  return { tf1, tf5, book, bookOk, allOk: all.every(Boolean) };
+  const all = [tf1, tf5].flatMap(t => [t.cvdOk, t.rsiOk, t.macdOk]);
+  return { tf1, tf5, allOk: all.every(Boolean) };
 }
 
 module.exports = { checkContinuation };
