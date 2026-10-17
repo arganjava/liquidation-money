@@ -8,6 +8,7 @@ const { FlowMoney, Setting } = require('./models');
 const EventEmitter = require('events');
 const bus = new EventEmitter();
 const { getBookImbalance } = require('./book-imbalance');   // taruh di bagian atas file
+const { checkContinuation } = require('./follow-up-check');
 
 
 // ----------------------------------------------------
@@ -230,7 +231,7 @@ async function runMinuteJob() {
             `• *Alasan:*\n   ↳ ${why.join('\n   ↳ ')}`;
           const isTelegramEnabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
           if (isTelegramEnabled) {
-            sendTelegramAlert(msg);
+           // sendTelegramAlert(msg);
             scheduleFollowUp(symbol, netFlow, ctx.price, label);
           }
         } catch (e) {
@@ -259,8 +260,8 @@ async function runMinuteJob() {
 
   if (docsToInsert.length > 0) {
     try {
-      const inserted = await FlowMoney.insertMany(docsToInsert);
-      inserted.forEach(d => bus.emit('flow', d));
+    //  const inserted = await FlowMoney.insertMany(docsToInsert);
+    //  inserted.forEach(d => bus.emit('flow', d));
       console.log(`⏱️ [1 Menit] Berhasil menyimpan ${docsToInsert.length} data koin ke 'flow_money'`);
     } catch (err) {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
@@ -283,6 +284,30 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
       else if (Math.sign(net) === Math.sign(origNet)) status = '✅ *CONTINUE* - arah masih sama';
       else status = '🔄 *REVERSAL* - arah berbalik';
       const curPrice = c && c.price ? c.price : origPrice;
+
+      let checkLines = '';
+      const isUp = label.includes('CONTINUATION UP');
+      if (isUp || label.includes('CONTINUATION DOWN')) {
+        try {
+          const r = await checkContinuation(symbol, isUp ? 1 : -1);
+          const t = ok => ok ? '✅' : '❌';
+          const tfLine = x =>
+            `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | OBV cross ${isUp ? 'up' : 'down'} ${t(x.obvOk)} | ` +
+            `RSI cross ${isUp ? 'up' : 'down'} ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | ` +
+            `MACD ${isUp ? 'lebih besar' : 'lebih kecil'} ${t(x.macdOk)}`;
+          const bookTxt = !r.book ? 'tidak tersedia'
+            : !r.book.reliable ? 'tidak stabil'
+            : `bid/ask ${r.book.ratio.toFixed(2)}x`;
+          checkLines =
+            `\n• *Konfirmasi ${isUp ? 'UP' : 'DOWN'}:* ${r.allOk ? '✅ SEMUA TERPENUHI' : '⚠️ BELUM LENGKAP'}\n` +
+            `   ↳ *Orderbook ${isUp ? 'bid tebal' : 'bid tipis'}:* ${t(r.bookOk)} (${bookTxt})\n` +
+            `${tfLine(r.tf1)}\n${tfLine(r.tf5)}`;
+        } catch (e) {
+          checkLines = '\n• *Konfirmasi:* gagal diambil';
+          console.error(`Gagal cek konfirmasi ${symbol}:`, e.message);
+        }
+      }
+
       const msg =
         `⏱️ ${label} \n\n*FOLLOW-UP 15s* #${symbol}\n\n` +
         `• *Sinyal awal:* ${origDir} ${fmt(origNet)} @ ${origPrice}\n` +
@@ -290,7 +315,8 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
         `• *Outflow:* ${fmt(outflow)} (${c ? c.outflow_count : 0}x)\n` +
         `• *Net/CVD:* ${fmt(net)}\n` +
         `• *Harga terakhir:* ${curPrice}\n` +
-        `• *Status:* ${status}`;
+        `• *Status:* ${status}` +
+        checkLines;
       const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
       if (enabled) sendTelegramAlert(msg);
     } catch (e) {
