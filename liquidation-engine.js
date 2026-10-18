@@ -299,7 +299,7 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
           const n = v => v == null || !isFinite(v) ? '-' : v.toPrecision(3);
           const tfLine = x =>
             `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | ` +
-            `RSI cross ${isUp ? 'up' : 'down'} ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | ` +
+         //   `RSI cross ${isUp ? 'up' : 'down'} ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | ` +
             `MACD ${isUp ? 'lebih besar' : 'lebih kecil'} ${t(x.macdOk)} (hist ${n(x.hist)} vs ${n(x.prevHist)})`;
           checkLines =
             `\n• *Konfirmasi ${isReversal ? 'REVERSAL ' : ''}${isUp ? 'UP' : 'DOWN'}:* ${r.allOk ? '✅ SEMUA TERPENUHI' : '⚠️ BELUM LENGKAP'}\n` +
@@ -320,7 +320,7 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
         `• *Status:* ${status}` +
         checkLines;
       const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
-      if (enabled) sendTelegramAlert(msg);
+      if (enabled && r.tf1.cvdOk && r.tf5.cvdOk && r.tf1.macdOk && r.tf5.macdOk) sendTelegramAlert(msg);
     } catch (e) {
       console.error(`Gagal follow-up ${symbol}:`, e.message);
     }
