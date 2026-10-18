@@ -261,8 +261,8 @@ async function runMinuteJob() {
 
   if (docsToInsert.length > 0) {
     try {
-     // const inserted = await FlowMoney.insertMany(docsToInsert);
-     // inserted.forEach(d => bus.emit('flow', d));
+      const inserted = await FlowMoney.insertMany(docsToInsert);
+      inserted.forEach(d => bus.emit('flow', d));
       console.log(`⏱️ [1 Menit] Berhasil menyimpan ${docsToInsert.length} data koin ke 'flow_money'`);
     } catch (err) {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
