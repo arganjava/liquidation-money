@@ -337,7 +337,7 @@ function startLiveWatch(symbol, dir, label, origPrice, fmt, isReversal) {
   console.log(`⏱️ Memulai live watch ${symbol} (${label}) untuk konfirmasi ${isReversal ? 'REVERSAL ' : ''}${dir > 0 ? 'UP' : 'DOWN'}`);
   const isUp = dir > 0;
   startLiveConfirm(symbol, dir, {
-    onConfirmed: async ({ tf1, tf5, price }) => {
+    onConfirmed: async ({ tf1, tf5, price, liq }) => {
       const t = ok => ok ? '✅' : '❌';
       const tfLine = x =>
         `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | RSI ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | MACD ${t(x.macdOk)}`;
@@ -345,6 +345,7 @@ function startLiveWatch(symbol, dir, label, origPrice, fmt, isReversal) {
         `🎯 ${label}\n\n*LIVE CONFIRMED ${isReversal ? 'REVERSAL ' : ''}${isUp ? 'UP' : 'DOWN'}* #${symbol}\n\n` +
         `• *Sinyal awal @* ${origPrice}\n` +
         `• *Harga sekarang:* ${price}\n` +
+        `• *Likuidasi live:* inflow ${fmt(liq.inflow)} | outflow ${fmt(liq.outflow)}\n` +
         `• *Konfirmasi:* ✅ SEMUA TERPENUHI\n${tfLine(tf1)}\n${tfLine(tf5)}`;
       const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
       if (enabled) sendTelegramAlert(msg);
