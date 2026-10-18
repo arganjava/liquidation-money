@@ -42,6 +42,11 @@ function crossed(line, ref, sign, lookback = CROSS_LOOKBACK) {
 // Semua dihitung pada candle yang sedang terbentuk (forming) agar follow-up 15 detik tetap responsif.
 async function analyzeTimeframe(symbol, interval, sign) {
   const { data } = await axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval, limit: 120 } });
+  return analyzeKlines(data, interval, sign);
+}
+
+// `data` = array kline format REST Binance (index 4 close, 7 quote volume, 10 taker buy quote volume)
+function analyzeKlines(data, interval, sign) {
   const closes = data.map(x => +x[4]);
   const n = closes.length - 1;
 
@@ -72,8 +77,9 @@ async function checkContinuation(symbol, sign) {
     analyzeTimeframe(symbol, '1m', sign),
     analyzeTimeframe(symbol, '5m', sign),
   ]);
-  const all = [tf1, tf5].flatMap(t => [t.cvdOk, t.rsiOk, t.macdOk]);
-  return { tf1, tf5, allOk: all.every(Boolean) };
+  return { tf1, tf5, allOk: allConfirmed(tf1, tf5) };
 }
 
-module.exports = { checkContinuation };
+const allConfirmed = (tf1, tf5) => [tf1, tf5].flatMap(t => [t.cvdOk, t.rsiOk, t.macdOk]).every(Boolean);
+
+module.exports = { checkContinuation, analyzeKlines, allConfirmed };

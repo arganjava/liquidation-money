@@ -9,6 +9,7 @@ const EventEmitter = require('events');
 const bus = new EventEmitter();
 const { getBookImbalance } = require('./book-imbalance');   // taruh di bagian atas file
 const { checkContinuation } = require('./follow-up-check');
+const { startLiveConfirm } = require('./live-confirm-worker');
 
 
 // ----------------------------------------------------
@@ -260,8 +261,8 @@ async function runMinuteJob() {
 
   if (docsToInsert.length > 0) {
     try {
-      const inserted = await FlowMoney.insertMany(docsToInsert);
-      inserted.forEach(d => bus.emit('flow', d));
+     // const inserted = await FlowMoney.insertMany(docsToInsert);
+     // inserted.forEach(d => bus.emit('flow', d));
       console.log(`⏱️ [1 Menit] Berhasil menyimpan ${docsToInsert.length} data koin ke 'flow_money'`);
     } catch (err) {
       console.error('⚠️ Gagal menyimpan ke flow_money:', err.message);
@@ -273,6 +274,7 @@ async function runMinuteJob() {
 function scheduleFollowUp(symbol, origNet, origPrice, label) {
   setTimeout(async () => {
     try {
+      console.log(`⏱️ Follow-up 15s untuk ${symbol} (${label})`);
       const c = localCache[symbol];
       const inflow = c ? c.inflow : 0;
       const outflow = c ? c.outflow : 0;
@@ -286,6 +288,7 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
       const curPrice = c && c.price ? c.price : origPrice;
 
       let checkLines = '';
+      let needLive = false;
       // Arah yang dikonfirmasi: CONTINUATION searah sinyal, REVERSAL berlawanan dengan flow awal
       const isReversal = label.includes('REVERSAL');
       const dir = label.includes('CONTINUATION UP') ? 1
@@ -299,8 +302,9 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
           const n = v => v == null || !isFinite(v) ? '-' : v.toPrecision(3);
           const tfLine = x =>
             `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | ` +
-         //   `RSI cross ${isUp ? 'up' : 'down'} ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | ` +
+            `RSI cross ${isUp ? 'up' : 'down'} ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | ` +
             `MACD ${isUp ? 'lebih besar' : 'lebih kecil'} ${t(x.macdOk)} (hist ${n(x.hist)} vs ${n(x.prevHist)})`;
+          needLive = !r.allOk;
           checkLines =
             `\n• *Konfirmasi ${isReversal ? 'REVERSAL ' : ''}${isUp ? 'UP' : 'DOWN'}:* ${r.allOk ? '✅ SEMUA TERPENUHI' : '⚠️ BELUM LENGKAP'}\n` +
             `${tfLine(r.tf1)}\n${tfLine(r.tf5)}`;
@@ -320,11 +324,32 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
         `• *Status:* ${status}` +
         checkLines;
       const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
-      if (enabled && r.tf1.cvdOk && r.tf5.cvdOk && r.tf1.macdOk && r.tf5.macdOk) sendTelegramAlert(msg);
+      if (enabled) sendTelegramAlert(msg);
+      if (needLive) startLiveWatch(symbol, dir, label, origPrice, fmt, isReversal);
     } catch (e) {
       console.error(`Gagal follow-up ${symbol}:`, e.message);
     }
   }, 15 * 1000);
+}
+
+// Worker websocket maks 10 menit: kirim Telegram saat semua konfirmasi 1m & 5m terpenuhi, lalu berhenti
+function startLiveWatch(symbol, dir, label, origPrice, fmt, isReversal) {
+  console.log(`⏱️ Memulai live watch ${symbol} (${label}) untuk konfirmasi ${isReversal ? 'REVERSAL ' : ''}${dir > 0 ? 'UP' : 'DOWN'}`);
+  const isUp = dir > 0;
+  startLiveConfirm(symbol, dir, {
+    onConfirmed: async ({ tf1, tf5, price }) => {
+      const t = ok => ok ? '✅' : '❌';
+      const tfLine = x =>
+        `   ↳ *${x.interval}:* CVD ${t(x.cvdOk)} (${fmt(x.cvd)}) | RSI ${t(x.rsiOk)} (${x.rsi == null ? '-' : x.rsi.toFixed(1)}) | MACD ${t(x.macdOk)}`;
+      const msg =
+        `🎯 ${label}\n\n*LIVE CONFIRMED ${isReversal ? 'REVERSAL ' : ''}${isUp ? 'UP' : 'DOWN'}* #${symbol}\n\n` +
+        `• *Sinyal awal @* ${origPrice}\n` +
+        `• *Harga sekarang:* ${price}\n` +
+        `• *Konfirmasi:* ✅ SEMUA TERPENUHI\n${tfLine(tf1)}\n${tfLine(tf5)}`;
+      const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
+      if (enabled) sendTelegramAlert(msg);
+    },
+  }).catch(e => console.error(`Live watch ${symbol}:`, e.message));
 }
 
 // Jalankan tepat di menit berikutnya (detik 0-1), lalu ulangi setiap menit
