@@ -202,7 +202,7 @@ async function runMinuteJob() {
           
           const ctx = await getContext(symbol);
           const { score, label, why, isOiUp } = classify(netFlow, ctx, prevAbsNet);
-          if (label === '⚪ NEUTRAL') continue;   // skip sinyal ambigu
+          if (label === '⚪ NEUTRAL' || label === '📉 CONTINUATION DOWN') continue;   // skip sinyal ambigu
           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(netFlow);
           cooldown[symbol] = nowMs;
 
