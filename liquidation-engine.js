@@ -18,7 +18,7 @@ const { startLiveConfirm } = require('./live-confirm-worker');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 10000;          // Alert jika net_flow > \$10,000 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 1000;          // Alert jika net_flow > \$10,000 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
@@ -27,9 +27,10 @@ const cooldown = {};    // symbol -> timestamp
 const COOLDOWN_MS = 5 * 60 * 1000;
 
 async function getContext(symbol) {
-  const [k, oi] = await Promise.all([
+  const [k, oi, v] = await Promise.all([
     axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '1m', limit: 6 } }),
     axios.get(`${FAPI}/futures/data/openInterestHist`, { params: { symbol, period: '5m', limit: 2 } }),
+    axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '5m', limit: 10 } }),
   ]);
   const c = k.data.map(x => ({ o: +x[1], h: +x[2], l: +x[3], c: +x[4] }));
   const last = c[c.length - 1];
@@ -41,10 +42,14 @@ async function getContext(symbol) {
     oiChg5m = ((b - a) / a) * 100;
   }
 
+  const volumes = v.data.map(x => +x[5] || 0);
+  const volMA5 = volumes.slice(-5).reduce((sum, val) => sum + val, 0) / Math.min(volumes.length, 5) || 0;
+  const volMA10 = volumes.slice(-10).reduce((sum, val) => sum + val, 0) / Math.min(volumes.length, 10) || 0;
+
   const delta = k.data.map(x => 2 * (+x[10]) - (+x[7]));   // buy agresif - sell agresif (USDT)
   const cvd5m = delta.reduce((a, b) => a + b, 0);
   const lastDelta = delta[delta.length - 1];
-  return { priceChg5m, closePos, oiChg5m, price: last.c, cvd5m, lastDelta };
+  return { priceChg5m, closePos, oiChg5m, price: last.c, cvd5m, lastDelta, volMA5, volMA10 };
 }
 
 function classify(netFlow, ctx, prevAbsNet) {
@@ -92,7 +97,90 @@ function classify(netFlow, ctx, prevAbsNet) {
 }
 
 
-async function sendTelegramAlert(message) {
+async function getTrendConfirmation(symbol, direction) {
+  const [priceResponse, oneMinuteResponse, fiveMinuteResponse] = await Promise.all([
+    axios.get(`${FAPI}/fapi/v1/ticker/price`, { params: { symbol } }),
+    axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '1m', limit: 11 } }),
+    axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '5m', limit: 11 } }),
+  ]);
+  const currentPrice = Number(priceResponse.data.price);
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    throw new Error(`Harga ticker tidak valid untuk ${symbol}`);
+  }
+
+  const now = Date.now();
+  const checkInterval = (interval, klines) => {
+    const candles = klines
+      .filter(candle => Number(candle[6]) < now)
+      .slice(-10)
+      .map(candle => ({
+        high: Number(candle[2]),
+        low: Number(candle[3]),
+        close: Number(candle[4]),
+        volume: Number(candle[5]),
+      }));
+
+    if (candles.length < 10 || candles.some(candle =>
+      !Number.isFinite(candle.high) ||
+      !Number.isFinite(candle.low) ||
+      !Number.isFinite(candle.close) ||
+      !Number.isFinite(candle.volume) ||
+      candle.volume < 0
+    )) {
+      return { interval, passed: false, reason: 'data candle tidak mencukupi atau tidak valid' };
+    }
+
+    const ma10 = candles.reduce((sum, candle) => sum + candle.close, 0) / candles.length;
+    const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0);
+    if (totalVolume <= 0) {
+      return { interval, passed: false, reason: 'volume candle kosong' };
+    }
+    const vwap = candles.reduce(
+      (sum, candle) => sum + ((candle.high + candle.low + candle.close) / 3) * candle.volume,
+      0
+    ) / totalVolume;
+
+    const passed = direction === 'LONG'
+      ? currentPrice > ma10 && ma10 > vwap
+      : currentPrice < ma10 && ma10 < vwap;
+    return {
+      interval,
+      passed,
+      currentPrice,
+      ma10,
+      vwap,
+    };
+  };
+
+  const checks = [
+    checkInterval('1m', oneMinuteResponse.data),
+    checkInterval('5m', fiveMinuteResponse.data),
+  ];
+  return { passed: checks.every(check => check.passed), checks };
+}
+
+async function sendTelegramAlert(message, trendCheck = null) {
+  if (trendCheck) {
+    const { symbol, direction } = trendCheck;
+    const condition = direction === 'LONG' ? 'harga > MA10 > VWAP' : 'harga < MA10 < VWAP';
+    try {
+      const { passed, checks } = await getTrendConfirmation(symbol, direction);
+      if (!passed) {
+        const details = checks.map(check => check.passed
+          ? `${check.interval}: lolos`
+          : check.reason
+            ? `${check.interval}: ${check.reason}`
+            : `${check.interval}: harga ${check.currentPrice}, MA10 ${check.ma10}, VWAP ${check.vwap}`
+        ).join('; ');
+        console.log(`⏭️ Skip Telegram ${direction} ${symbol}: syarat ${condition} tidak terpenuhi (${details})`);
+        return;
+      }
+    } catch (err) {
+      console.error(`❌ Validasi trend ${direction} gagal untuk ${symbol}; alert tidak dikirim:`, err.message);
+      return;
+    }
+  }
+
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
   try {
     await axios.post(url, { chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'Markdown' });
@@ -203,6 +291,10 @@ async function runMinuteJob() {
           const ctx = await getContext(symbol);
           const { score, label, why, isOiUp } = classify(netFlow, ctx, prevAbsNet);
           if (label === '⚪ NEUTRAL' || label === '📉 CONTINUATION DOWN') continue;   // skip sinyal ambigu
+          if (!(ctx.volMA5 > ctx.volMA10)) {
+            console.log(`⏭️ Skip alert ${symbol}: volMA5 ${ctx.volMA5.toFixed(2)} <= volMA10 ${ctx.volMA10.toFixed(2)}`);
+            continue;
+          }
           const formattedNet = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(netFlow);
           cooldown[symbol] = nowMs;
 
@@ -324,7 +416,7 @@ function scheduleFollowUp(symbol, origNet, origPrice, label) {
         `• *Status:* ${status}` +
         checkLines;
       const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
-      if (enabled) sendTelegramAlert(msg);
+      if (enabled) sendTelegramAlert(msg, { symbol, direction: isUp ? 'LONG' : 'SHORT' });
       if (needLive) startLiveWatch(symbol, dir, label, origPrice, fmt, isReversal);
     } catch (e) {
       console.error(`Gagal follow-up ${symbol}:`, e.message);
@@ -348,7 +440,7 @@ function startLiveWatch(symbol, dir, label, origPrice, fmt, isReversal) {
         `• *Likuidasi live:* inflow ${fmt(liq.inflow)} | outflow ${fmt(liq.outflow)}\n` +
         `• *Konfirmasi:* ✅ SEMUA TERPENUHI\n${tfLine(tf1)}\n${tfLine(tf5)}`;
       const enabled = (await Setting.findOne({ key: 'telegram' }).lean())?.enabled ?? true;
-      if (enabled) sendTelegramAlert(msg);
+      if (enabled) sendTelegramAlert(msg, { symbol, direction: isUp ? 'LONG' : 'SHORT' });
     },
   }).catch(e => console.error(`Live watch ${symbol}:`, e.message));
 }
