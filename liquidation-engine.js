@@ -18,7 +18,7 @@ const { startLiveConfirm } = require('./live-confirm-worker');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_IDS;
-const SPIKE_THRESHOLD_USDT = 1000;          // Alert jika net_flow > \$10,000 USDT dalam 1 menit akibat likuidasi
+const SPIKE_THRESHOLD_USDT = 500;          // Alert jika net_flow > \$10,000 USDT dalam 1 menit akibat likuidasi
 
 
 const FAPI = 'https://fapi.binance.com';
@@ -101,7 +101,7 @@ async function getTrendConfirmation(symbol, direction) {
   const [priceResponse, oneMinuteResponse, fiveMinuteResponse] = await Promise.all([
     axios.get(`${FAPI}/fapi/v1/ticker/price`, { params: { symbol } }),
     axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '1m', limit: 11 } }),
-    axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '5m', limit: 11 } }),
+    axios.get(`${FAPI}/fapi/v1/klines`, { params: { symbol, interval: '5m', limit: 60 } }),
   ]);
   const currentPrice = Number(priceResponse.data.price);
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
@@ -156,6 +156,61 @@ async function getTrendConfirmation(symbol, direction) {
     checkInterval('1m', oneMinuteResponse.data),
     checkInterval('5m', fiveMinuteResponse.data),
   ];
+  const fiveMinuteCloses = fiveMinuteResponse.data
+    .filter(candle => Number(candle[6]) < now)
+    .map(candle => Number(candle[4]));
+  const maPoints = [];
+  if (fiveMinuteCloses.length >= 54 && fiveMinuteCloses.every(Number.isFinite)) {
+    for (let end = 49; end < fiveMinuteCloses.length; end++) {
+      const ma5 = fiveMinuteCloses.slice(end - 4, end + 1).reduce((sum, close) => sum + close, 0) / 5;
+      const ma50 = fiveMinuteCloses.slice(end - 49, end + 1).reduce((sum, close) => sum + close, 0) / 50;
+      maPoints.push({ ma5, ma50 });
+    }
+  }
+
+  let maCrossCheck;
+  const isLong = direction === 'LONG';
+  const currentMa = maPoints[maPoints.length - 1];
+  if (!currentMa) {
+    maCrossCheck = {
+      interval: '5m MA5/MA50',
+      passed: false,
+      reason: 'data candle tertutup tidak cukup untuk menghitung MA50 dan crossover',
+    };
+  } else if (isLong ? currentMa.ma5 <= currentMa.ma50 : currentMa.ma5 >= currentMa.ma50) {
+    maCrossCheck = {
+      interval: '5m MA5/MA50',
+      passed: false,
+      reason: `MA5 ${currentMa.ma5} tidak ${isLong ? 'di atas' : 'di bawah'} MA50 ${currentMa.ma50}`,
+    };
+  } else {
+    let crossAge = null;
+    for (let age = 0; age < 3; age++) {
+      const pointIndex = maPoints.length - 1 - age;
+      const previous = maPoints[pointIndex - 1];
+      const current = maPoints[pointIndex];
+      if (!previous || !current) break;
+      const crossed = isLong
+        ? previous.ma5 <= previous.ma50 && current.ma5 > current.ma50
+        : previous.ma5 >= previous.ma50 && current.ma5 < current.ma50;
+      if (crossed) {
+        crossAge = age;
+        break;
+      }
+    }
+    maCrossCheck = crossAge === null
+      ? {
+          interval: '5m MA5/MA50',
+          passed: false,
+          reason: `crossover MA5/MA50 ${isLong ? 'ke atas' : 'ke bawah'} sudah lebih dari 3 candle`,
+        }
+      : {
+          interval: '5m MA5/MA50',
+          passed: true,
+          reason: `crossover ${isLong ? 'ke atas' : 'ke bawah'} pada candle ke-${crossAge + 1} terakhir`,
+        };
+  }
+  checks.push(maCrossCheck);
   return { passed: checks.every(check => check.passed), checks };
 }
 
