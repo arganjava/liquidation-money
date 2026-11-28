@@ -15,7 +15,7 @@ const CFG = {
 };
 
 const MA_FAST_PERIOD = 5;
-const MA_SLOW_PERIOD = 100;
+const MA_SLOW_PERIOD = 50;
 const VOLUME_FAST_PERIOD = 10;
 const VOLUME_SLOW_PERIOD = 30;
 const alertedCandles = new Map();
