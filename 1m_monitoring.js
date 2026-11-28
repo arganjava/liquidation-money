@@ -10,6 +10,9 @@ const CFG = {
   maxCrossAge: 3,
   minQuoteVol24h: 25_000_000,
   cvdCandles: 3,
+  orderBookLimit: 100,
+  blockOrderDistancePct: 0.3,
+  minBlockOrderUsdt: 25_000,
   concurrency: 10,
   requestTimeoutMs: 10000,
 };
@@ -150,6 +153,49 @@ async function getClosedCandles(symbol) {
     }));
 }
 
+function findBlockingWall(orderBook, side, currentPrice) {
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    throw new Error('Harga untuk pemeriksaan order book tidak valid');
+  }
+  if (side !== 'LONG' && side !== 'SHORT') {
+    throw new Error(`Arah sinyal tidak valid: ${side}`);
+  }
+
+  const bookSide = side === 'LONG' ? orderBook.asks : orderBook.bids;
+  if (!Array.isArray(bookSide)) throw new Error(`Data ${side} order book tidak valid`);
+
+  for (const [rawPrice, rawQuantity] of bookSide) {
+    const price = Number(rawPrice);
+    const quantity = Number(rawQuantity);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) continue;
+
+    const distancePct = side === 'LONG'
+      ? ((price - currentPrice) / currentPrice) * 100
+      : ((currentPrice - price) / currentPrice) * 100;
+    if (distancePct <= 0 || distancePct > CFG.blockOrderDistancePct) continue;
+
+    const notionalUsdt = price * quantity;
+    if (notionalUsdt >= CFG.minBlockOrderUsdt) {
+      return {
+        side: side === 'LONG' ? 'ASK' : 'BID',
+        price,
+        notionalUsdt,
+        distancePct,
+      };
+    }
+  }
+
+  return null;
+}
+
+async function getBlockingWall(symbol, side, currentPrice) {
+  const response = await axios.get(`${CFG.restBase}/fapi/v1/depth`, {
+    params: { symbol, limit: CFG.orderBookLimit },
+    timeout: CFG.requestTimeoutMs,
+  });
+  return findBlockingWall(response.data, side, currentPrice);
+}
+
 async function mapLimit(items, limit, callback) {
   const results = new Array(items.length);
   let nextIndex = 0;
@@ -190,9 +236,29 @@ async function scan() {
     }
   });
 
-  const freshSignals = signals
+  const candidates = signals
     .filter(Boolean)
     .filter(signal => alertedCandles.get(`${signal.symbol}:${signal.side}`) !== signal.candleOpenTime);
+
+  const freshSignals = (await mapLimit(candidates, CFG.concurrency, async signal => {
+    try {
+      const wall = await getBlockingWall(signal.symbol, signal.side, signal.currentPrice);
+      if (wall) {
+        console.log(
+          `⏭️ Skip ${signal.side} ${signal.symbol}: ${wall.side} wall ` +
+          `${wall.notionalUsdt.toFixed(0)} USDT pada ${wall.price} ` +
+          `(${wall.distancePct.toFixed(3)}% dari harga)`
+        );
+        return null;
+      }
+      return signal;
+    } catch (error) {
+      console.error(
+        `[${signal.symbol}] Gagal memeriksa order book; sinyal dilewati: ${error.message}`
+      );
+      return null;
+    }
+  })).filter(Boolean);
 
   if (freshSignals.length === 0) {
     console.log('Tidak ada momentum baru.');
@@ -251,4 +317,4 @@ if (require.main === module) {
   startMonitoring();
 }
 
-module.exports = { analyzeCandles, filterTradableSymbols };
+module.exports = { analyzeCandles, filterTradableSymbols, findBlockingWall };
