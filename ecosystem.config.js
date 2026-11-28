@@ -23,5 +23,22 @@ module.exports = {
         NODE_ENV: 'production',
       },
     },
+    {
+      name        : '1m-monitoring',
+      script      : '1m_monitoring.js',
+      instances   : 1,
+      exec_mode   : 'fork',
+      watch       : false,
+      autorestart : true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      out_file    : './logs/1m-monitoring-out.log',
+      error_file  : './logs/1m-monitoring-err.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      merge_logs  : true,
+      env: {
+        NODE_ENV: 'production',
+      },
+    },
   ],
 };
