@@ -7,7 +7,7 @@ const telegram = require('./telegram');
 const CFG = {
   restBase: (process.env.BINANCE_FAPI || 'https://fapi.binance.com').replace(/\/$/, ''),
   candleLimit: 60,
-  maxCrossAge: 3,
+  maxCrossAge: 0,
   minQuoteVol24h: 10_000_000,
   cvdCandles: 3,
   concurrency: 10,
@@ -19,6 +19,9 @@ const MA_SLOW_PERIOD = 50;
 const VOLUME_FAST_PERIOD = 10;
 const VOLUME_SLOW_PERIOD = 30;
 const alertedCandles = new Map();
+const pendingSignals = [];
+let notificationTimer = null;
+let notificationQueue = Promise.resolve();
 
 function filterTradableSymbols(symbols, tickers, minQuoteVol24h = CFG.minQuoteVol24h) {
   const tickerBySymbol = new Map(tickers.map(ticker => [ticker.symbol, ticker]));
@@ -172,40 +175,69 @@ function formatSignal(symbol, signal) {
     `MA50: ${signal.ma50}\n` +
     `Vol MA10: ${signal.volumeMa10} | Vol MA30: ${signal.volumeMa30}\n` +
     `CVD 3 candle 1m: ${signal.cvd}\n` +
-    `Crossover: ${signal.age} candle lalu`;
+    'Crossover: candle 1m terbaru';
 }
 
 async function scan() {
   const symbols = await getSymbols();
-  console.log(`[${new Date().toISOString()}] Scan ${symbols.length} simbol futures USDT 1m (vol 24h >= 25 juta USDT)`);
+  console.log(
+    `[${new Date().toISOString()}] Scan ${symbols.length} simbol futures USDT 1m ` +
+    `(vol 24h >= ${(CFG.minQuoteVol24h / 1_000_000).toFixed(0)} juta USDT)`
+  );
 
-  const signals = await mapLimit(symbols, CFG.concurrency, async market => {
+  let signalCount = 0;
+  await mapLimit(symbols, CFG.concurrency, async market => {
     try {
       const candles = await getClosedCandles(market.symbol);
       const signal = analyzeCandles(candles);
-      return signal ? { ...market, ...signal } : null;
+      if (!signal) return;
+
+      const alert = { ...market, ...signal };
+      const key = `${alert.symbol}:${alert.side}`;
+      if (alertedCandles.get(key) === alert.candleOpenTime) return;
+
+      signalCount++;
+      console.log(`${alert.side} MOMENTUM ${alert.symbol} @ ${alert.currentPrice} (CVD ${alert.cvd}, crossover candle terbaru)`);
+      queueSignal(alert);
     } catch (error) {
       console.error(`[${market.symbol}] Gagal memeriksa candle: ${error.message}`);
-      return null;
     }
   });
 
-  const freshSignals = signals
-    .filter(Boolean)
-    .filter(signal => alertedCandles.get(`${signal.symbol}:${signal.side}`) !== signal.candleOpenTime);
-
-  if (freshSignals.length === 0) {
+  await flushPendingSignals();
+  if (signalCount === 0) {
     console.log('Tidak ada momentum baru.');
-    return;
   }
+}
 
-  for (const signal of freshSignals) {
-    console.log(`${signal.side} MOMENTUM ${signal.symbol} @ ${signal.currentPrice} (CVD ${signal.cvd}, crossover ${signal.age} candle lalu)`);
+function queueSignal(signal) {
+  pendingSignals.push(signal);
+  if (notificationTimer !== null) return;
+
+  notificationTimer = setTimeout(() => {
+    notificationTimer = null;
+    notificationQueue = notificationQueue
+      .then(sendPendingSignals)
+      .catch(error => console.error(`Gagal mengirim notifikasi momentum: ${error.message}`));
+  }, 250);
+}
+
+async function flushPendingSignals() {
+  if (notificationTimer !== null) {
+    clearTimeout(notificationTimer);
+    notificationTimer = null;
+    notificationQueue = notificationQueue
+      .then(sendPendingSignals)
+      .catch(error => console.error(`Gagal mengirim notifikasi momentum: ${error.message}`));
   }
+  await notificationQueue;
+}
 
+async function sendPendingSignals() {
+  const signals = pendingSignals.splice(0);
   let batch = [];
   let batchText = '';
-  for (const signal of freshSignals) {
+  for (const signal of signals) {
     const formatted = formatSignal(signal.symbol, signal);
     if (batch.length > 0 && batchText.length + formatted.length + 2 > 3500) {
       await sendSignalBatch(batch, batchText);
