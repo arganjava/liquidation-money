@@ -17,8 +17,8 @@ const CFG = {
   requestTimeoutMs: 10000,
 };
 
-const MA_FAST_PERIOD = 5;
-const MA_SLOW_PERIOD = 50;
+const MA_FAST_PERIOD = 9;
+const MA_SLOW_PERIOD = 26;
 const VOLUME_FAST_PERIOD = 10;
 const VOLUME_SLOW_PERIOD = 30;
 const alertedCandles = new Map();
