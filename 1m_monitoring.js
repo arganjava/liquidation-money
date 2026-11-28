@@ -8,7 +8,7 @@ const CFG = {
   restBase: (process.env.BINANCE_FAPI || 'https://fapi.binance.com').replace(/\/$/, ''),
   candleLimit: 60,
   maxCrossAge: 3,
-  minQuoteVol24h: 25_000_000,
+  minQuoteVol24h: 10_000_000,
   cvdCandles: 3,
   concurrency: 10,
   requestTimeoutMs: 10000,
