@@ -8,6 +8,8 @@ const CFG = {
   restBase: (process.env.BINANCE_FAPI || 'https://fapi.binance.com').replace(/\/$/, ''),
   candleLimit: 60,
   maxCrossAge: 3,
+  minQuoteVol24h: 25_000_000,
+  cvdCandles: 3,
   concurrency: 10,
   requestTimeoutMs: 10000,
 };
@@ -17,6 +19,24 @@ const MA_SLOW_PERIOD = 50;
 const VOLUME_FAST_PERIOD = 10;
 const VOLUME_SLOW_PERIOD = 30;
 const alertedCandles = new Map();
+
+function filterTradableSymbols(symbols, tickers, minQuoteVol24h = CFG.minQuoteVol24h) {
+  const tickerBySymbol = new Map(tickers.map(ticker => [ticker.symbol, ticker]));
+  return symbols
+    .filter(symbol =>
+      symbol.quoteAsset === 'USDT' &&
+      symbol.contractType === 'PERPETUAL' &&
+      symbol.status === 'TRADING'
+    )
+    .flatMap(symbol => {
+      const ticker = tickerBySymbol.get(symbol.symbol);
+      const quoteVolume = Number(ticker?.quoteVolume);
+      const currentPrice = Number(ticker?.lastPrice);
+      if (!Number.isFinite(quoteVolume) || quoteVolume < minQuoteVol24h ||
+          !Number.isFinite(currentPrice) || currentPrice <= 0) return [];
+      return [{ symbol: symbol.symbol, quoteVolume, currentPrice }];
+    });
+}
 
 function average(values, end, period) {
   if (end + 1 < period) return NaN;
@@ -50,6 +70,17 @@ function analyzeCandles(candles, maxCrossAge = CFG.maxCrossAge) {
     candles[lastIndex].open < ma5 && volumeMa10 > volumeMa30;
   if (!longSetup && !shortSetup) return null;
 
+  const recentCandles = candles.slice(-CFG.cvdCandles);
+  if (recentCandles.some(candle =>
+    !Number.isFinite(candle.quoteVolume) || candle.quoteVolume < 0 ||
+    !Number.isFinite(candle.takerBuyQuoteVolume) || candle.takerBuyQuoteVolume < 0
+  )) return null;
+  const deltas = recentCandles.map(candle => 2 * candle.takerBuyQuoteVolume - candle.quoteVolume);
+  const cvd = deltas.reduce((sum, delta) => sum + delta, 0);
+  const lastDelta = deltas[deltas.length - 1];
+  const cvdUp = cvd > 0 && lastDelta >= 0;
+  const cvdDown = cvd < 0 && lastDelta <= 0;
+
   for (let age = 0; age <= maxCrossAge; age++) {
     const index = lastIndex - age;
     const previousIndex = index - 1;
@@ -61,7 +92,7 @@ function analyzeCandles(candles, maxCrossAge = CFG.maxCrossAge) {
     const crossedUp = previousCrossMa5 <= previousCrossMa50 && crossMa5 > crossMa50;
     const crossedDown = previousCrossMa5 >= previousCrossMa50 && crossMa5 < crossMa50;
 
-    if (crossedUp && longSetup) {
+    if (crossedUp && longSetup && cvdUp) {
       return {
         side: 'LONG',
         age,
@@ -70,11 +101,12 @@ function analyzeCandles(candles, maxCrossAge = CFG.maxCrossAge) {
         ma50,
         volumeMa10,
         volumeMa30,
+        cvd,
         candleOpenTime: candles[index].openTime,
       };
     }
 
-    if (crossedDown && shortSetup) {
+    if (crossedDown && shortSetup && cvdDown) {
       return {
         side: 'SHORT',
         age,
@@ -83,6 +115,7 @@ function analyzeCandles(candles, maxCrossAge = CFG.maxCrossAge) {
         ma50,
         volumeMa10,
         volumeMa30,
+        cvd,
         candleOpenTime: candles[index].openTime,
       };
     }
@@ -92,16 +125,11 @@ function analyzeCandles(candles, maxCrossAge = CFG.maxCrossAge) {
 }
 
 async function getSymbols() {
-  const response = await axios.get(`${CFG.restBase}/fapi/v1/exchangeInfo`, {
-    timeout: CFG.requestTimeoutMs,
-  });
-  return response.data.symbols
-    .filter(symbol =>
-      symbol.quoteAsset === 'USDT' &&
-      symbol.contractType === 'PERPETUAL' &&
-      symbol.status === 'TRADING'
-    )
-    .map(symbol => symbol.symbol);
+  const [exchangeInfo, ticker24h] = await Promise.all([
+    axios.get(`${CFG.restBase}/fapi/v1/exchangeInfo`, { timeout: CFG.requestTimeoutMs }),
+    axios.get(`${CFG.restBase}/fapi/v1/ticker/24hr`, { timeout: CFG.requestTimeoutMs }),
+  ]);
+  return filterTradableSymbols(exchangeInfo.data.symbols, ticker24h.data);
 }
 
 async function getClosedCandles(symbol) {
@@ -117,6 +145,8 @@ async function getClosedCandles(symbol) {
       open: Number(row[1]),
       close: Number(row[4]),
       volume: Number(row[5]),
+      quoteVolume: Number(row[7]),
+      takerBuyQuoteVolume: Number(row[10]),
     }));
 }
 
@@ -136,23 +166,26 @@ async function mapLimit(items, limit, callback) {
 function formatSignal(symbol, signal) {
   const label = signal.side === 'LONG' ? 'LONG' : 'SHORT';
   return `*${label} MOMENTUM* ${symbol}\n` +
+    `Harga saat ini: ${signal.currentPrice}\n` +
+    `Volume 24 jam: ${signal.quoteVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDT\n` +
     `MA5: ${signal.ma5} (sebelumnya ${signal.previousMa5})\n` +
     `MA50: ${signal.ma50}\n` +
     `Vol MA10: ${signal.volumeMa10} | Vol MA30: ${signal.volumeMa30}\n` +
+    `CVD 3 candle 1m: ${signal.cvd}\n` +
     `Crossover: ${signal.age} candle lalu`;
 }
 
 async function scan() {
   const symbols = await getSymbols();
-  console.log(`[${new Date().toISOString()}] Scan ${symbols.length} simbol futures USDT 1m`);
+  console.log(`[${new Date().toISOString()}] Scan ${symbols.length} simbol futures USDT 1m (vol 24h >= 25 juta USDT)`);
 
-  const signals = await mapLimit(symbols, CFG.concurrency, async symbol => {
+  const signals = await mapLimit(symbols, CFG.concurrency, async market => {
     try {
-      const candles = await getClosedCandles(symbol);
+      const candles = await getClosedCandles(market.symbol);
       const signal = analyzeCandles(candles);
-      return signal ? { symbol, ...signal } : null;
+      return signal ? { ...market, ...signal } : null;
     } catch (error) {
-      console.error(`[${symbol}] Gagal memeriksa candle: ${error.message}`);
+      console.error(`[${market.symbol}] Gagal memeriksa candle: ${error.message}`);
       return null;
     }
   });
@@ -167,7 +200,7 @@ async function scan() {
   }
 
   for (const signal of freshSignals) {
-    console.log(`${signal.side} MOMENTUM ${signal.symbol} (crossover ${signal.age} candle lalu)`);
+    console.log(`${signal.side} MOMENTUM ${signal.symbol} @ ${signal.currentPrice} (CVD ${signal.cvd}, crossover ${signal.age} candle lalu)`);
   }
 
   let batch = [];
@@ -218,4 +251,4 @@ if (require.main === module) {
   startMonitoring();
 }
 
-module.exports = { analyzeCandles };
+module.exports = { analyzeCandles, filterTradableSymbols };
